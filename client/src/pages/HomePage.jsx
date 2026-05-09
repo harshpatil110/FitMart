@@ -1,6 +1,6 @@
 // src/pages/HomePage.jsx
-import { useState, useEffect, useRef } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import { signOut } from "firebase/auth";
 import { auth } from "../auth/firebase";
@@ -209,14 +209,11 @@ function ProductCard({ product, onAdd, cartItems = [], updateQty }) {
 export default function HomePage() {
   const navigate = useNavigate();
   const [user, setUser] = useState(null);
-  const [searchParams, setSearchParams] = useSearchParams();
-  const activeCategory = searchParams.get("category") || "all";
+  const [activeCategory, setActiveCategory] = useState("all");
   const [cart, setCart] = useState([]);
   const [cartOpen, setCartOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
-  const debounceRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [visible, setVisible] = useState(false);
   const [products, setProducts] = useState([]);
@@ -225,12 +222,6 @@ export default function HomePage() {
   const [showAll, setShowAll] = useState(false);
 
   const { showBanner, dismissBanner } = useWelcomeDiscount(user);
-
-  useEffect(() => {
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => setDebouncedQuery(searchQuery), 300);
-    return () => clearTimeout(debounceRef.current);
-  }, [searchQuery]);
 
   useEffect(() => { document.title = "FitMart - Fitness & Nutrition Store"; }, []);
 
@@ -336,9 +327,9 @@ export default function HomePage() {
 
   const filtered = products.filter(p => {
     const matchCat = activeCategory === "all" || p.category === activeCategory;
-    const matchSearch = !debouncedQuery
-      || p.name.toLowerCase().includes(debouncedQuery.toLowerCase())
-      || p.brand?.toLowerCase().includes(debouncedQuery.toLowerCase());
+    const matchSearch = !searchQuery
+      || p.name.toLowerCase().includes(searchQuery.toLowerCase())
+      || p.brand?.toLowerCase().includes(searchQuery.toLowerCase());
     return matchCat && matchSearch;
   });
 
@@ -472,7 +463,7 @@ export default function HomePage() {
                              flex gap-2 mb-5 sm:mb-8 overflow-x-auto pb-1
                              scrollbar-none -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap`}>
               {CATEGORIES.map(c => (
-                <button key={c.value} onClick={() => { setSearchParams({ category: c.value }); setShowAll(false); setSearchQuery(""); }}
+                <button key={c.value} onClick={() => { setActiveCategory(c.value); setShowAll(false); }}
                   className={`text-xs px-4 py-2 rounded-full transition-all whitespace-nowrap shrink-0
                               ${activeCategory === c.value
                       ? "bg-stone-900 text-white"
