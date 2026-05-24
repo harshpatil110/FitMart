@@ -61,7 +61,8 @@ router.get('/', async (req, res) => {
     const cached = await cache.get(cacheKey);
     if (cached) {
       res.set('X-Cache', 'HIT');
-      res.set('X-Total-Count', String(cached.meta.total));
+      const totalCount = (cached.payload && cached.payload.meta && cached.payload.meta.total) ? cached.payload.meta.total : 0;
+      res.set('X-Total-Count', String(totalCount));
       res.set('ETag', cached.etag);
       // Conditional request handling
       const ifNoneMatch = req.headers['if-none-match'];
@@ -105,6 +106,7 @@ router.get('/', async (req, res) => {
 
     return res.json(payload);
   } catch (err) {
+    console.error('[products] GET /api/products error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });

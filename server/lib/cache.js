@@ -1,6 +1,26 @@
-const { createClient } = (() => {
-  try { return require('redis'); } catch (e) { return null; }
-})();
+let createClient = null;
+try {
+  const _redis = require('redis');
+  createClient = _redis && _redis.createClient ? _redis.createClient : null;
+} catch (e) {
+  createClient = null;
+}
+
+let upstashClient = null;
+let useUpstash = false;
+try {
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    const { Redis } = require('@upstash/redis');
+    upstashClient = new Redis({
+      url: process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    });
+    useUpstash = true;
+  }
+} catch (e) {
+  useUpstash = false;
+}
+
 const EventEmitter = require('events');
 
 class Cache extends EventEmitter {
@@ -14,6 +34,14 @@ class Cache extends EventEmitter {
   }
 
   async init() {
+    // Prefer Upstash (serverless-friendly) when configured
+    if (useUpstash && upstashClient) {
+      this.client = upstashClient;
+      this.enabled = true;
+      console.log('[cache] Connected to Upstash Redis');
+      return;
+    }
+
     const redisUrl = process.env.REDIS_URL || process.env.REDIS_HOST;
     if (!createClient || !redisUrl) {
       console.warn('[cache] Redis not configured — using in-memory fallback');
@@ -24,7 +52,6 @@ class Cache extends EventEmitter {
     try {
       const client = createClient({ url: redisUrl });
       client.on('error', (err) => {
-        // Be defensive: some error events may not include a message property.
         if (process.env.DEBUG_REDIS === 'true') {
           console.warn('[redis] error (full):', err);
         } else {
@@ -42,7 +69,7 @@ class Cache extends EventEmitter {
       if (process.env.DEBUG_REDIS === 'true') {
         console.warn('[cache] Redis connection failed — falling back to memory cache (full):', err);
       } else {
-        console.warn('[cache] Redis connection failed — falling back to memory cache', err && (err.message || err.code) ? (err.message || err.code) : '<no-message>');
+        console.warn('[cache] Redis connection failed — falling back to memory cache', this._errMsg(err));
       }
       this.enabled = false;
     }
@@ -53,15 +80,22 @@ class Cache extends EventEmitter {
     return JSON.stringify(key);
   }
 
+  _errMsg(err) {
+    if (!err) return '<no-message>';
+    if (typeof err === 'string') return err;
+    return err.message || err.code || String(err) || '<no-message>';
+  }
+
   async get(key) {
     const k = this._serializeKey(key);
     if (this.enabled && this.client) {
       try {
         const val = await this.client.get(k);
-        if (!val) return null;
-        return JSON.parse(val);
+        if (val === null || val === undefined) return null;
+        try { return JSON.parse(val); } catch (e) { return val; }
       } catch (err) {
-        console.warn('[cache] redis get failed', err.message);
+        console.warn('[cache] redis get failed', this._errMsg(err));
+        if (process.env.DEBUG_REDIS === 'true') console.error(err);
         return null;
       }
     }
@@ -74,10 +108,17 @@ class Cache extends EventEmitter {
     const ttl = typeof ttlSec === 'number' ? ttlSec : this.ttl;
     if (this.enabled && this.client) {
       try {
-        await this.client.set(k, JSON.stringify(value), { EX: ttl });
+        // try setting with expiry option; different clients accept different arg shapes
+        try {
+          await this.client.set(k, JSON.stringify(value), { EX: ttl });
+        } catch (e) {
+          // fallback: try lowercase option name or no options
+          try { await this.client.set(k, JSON.stringify(value), { ex: ttl }); } catch (e2) { await this.client.set(k, JSON.stringify(value)); }
+        }
         return true;
       } catch (err) {
-        console.warn('[cache] redis set failed', err.message);
+        console.warn('[cache] redis set failed', this._errMsg(err));
+        if (process.env.DEBUG_REDIS === 'true') console.error(err);
         return false;
       }
     }
@@ -89,13 +130,22 @@ class Cache extends EventEmitter {
   async delPattern(prefix) {
     if (this.enabled && this.client) {
       try {
-        // use SCAN to find matching keys and delete
-        const iter = this.client.scanIterator({ MATCH: `${prefix}*` });
-        const keys = [];
-        for await (const k of iter) keys.push(k);
-        if (keys.length) await this.client.del(keys);
+        // use SCAN to find matching keys and delete (if supported)
+        if (typeof this.client.scanIterator === 'function') {
+          const iter = this.client.scanIterator({ MATCH: `${prefix}*` });
+          const keys = [];
+          for await (const k of iter) keys.push(k);
+          if (keys.length) await this.client.del(keys);
+        } else if (typeof this.client.keys === 'function') {
+          const keys = await this.client.keys(`${prefix}*`);
+          if (keys && keys.length) await this.client.del(keys);
+        } else {
+          // client doesn't support pattern deletion via SDK; fallback to flush (dangerous) or skip
+          console.warn('[cache] delPattern not supported by Redis client');
+        }
       } catch (err) {
-        console.warn('[cache] redis delPattern failed', err.message);
+        console.warn('[cache] redis delPattern failed', this._errMsg(err));
+        if (process.env.DEBUG_REDIS === 'true') console.error(err);
       }
       return;
     }
@@ -106,7 +156,7 @@ class Cache extends EventEmitter {
 
   async clearAll() {
     if (this.enabled && this.client) {
-      try { await this.client.flushDb(); } catch (err) { console.warn('[cache] flushDb failed', err.message); }
+      try { await this.client.flushDb(); } catch (err) { console.warn('[cache] flushDb failed', this._errMsg(err)); if (process.env.DEBUG_REDIS === 'true') console.error(err); }
       return;
     }
     this.mem.clear();

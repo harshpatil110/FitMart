@@ -131,7 +131,7 @@ export default function LandingPage() {
       setLoadingProducts(true);
       setBackendError(false);
       try {
-        const res = await fetch(`${API}/api/products`);
+        const res = await fetch(`${API}/api/products?all=true`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setProducts(data.map(p => ({ ...p, id: p.productId || p.id })));
